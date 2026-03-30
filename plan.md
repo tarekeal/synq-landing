@@ -1,305 +1,250 @@
-# F1 Implementation Plan: Database Models, Async Engine, Alembic Migrations
+# F2: Auth API — Implementation Plan
 
 ## Summary
 
-**What we're building:**
-The foundational database layer for the Synq backend. This means scaffolding the Python backend directory, configuring a SQLAlchemy 2.x async engine, defining the `User` and `Note` ORM models, and wiring Alembic for schema versioning. No application logic (auth, CRUD) is included — this is purely the persistence foundation that F2 (Auth API) and F3 (Notes API) will build on.
+**What we're building**: A JWT-based authentication API for the Synq backend, providing user registration, login, token refresh, and current-user endpoints. This is Milestone 1 (M1) of the Synq roadmap.
 
-**Why:**
-F2 and F3 both import from this layer. Getting the models, engine configuration, and migration workflow correct upfront prevents schema drift and makes subsequent features straightforward. Async SQLAlchemy is non-negotiable because FastAPI is async-first.
+**Why**: The frontend (M3+) needs authenticated sessions to access notes CRUD (M2). Auth is the critical dependency for every downstream feature.
 
-**Scope boundary:**
-- ✅ `backend/` directory scaffold
-- ✅ `pyproject.toml` with all F1 dependencies
-- ✅ SQLAlchemy 2.x async engine + session factory
-- ✅ `User` and `Note` ORM models (UUID PKs, UTC timestamps)
-- ✅ Alembic init + `env.py` wired to async engine
-- ✅ First migration: `0001_initial_schema`
-- ✅ `.env.example` with `DATABASE_URL`
-- ✅ Unit tests for model creation and relationships
-- ❌ FastAPI app setup (F2)
-- ❌ Auth endpoints (F2)
-- ❌ Notes endpoints (F3)
+**Scope**:
+- `POST /auth/register` — create account, return token pair
+- `POST /auth/login` — verify credentials, return token pair
+- `POST /auth/refresh` — exchange refresh token for new access token
+- `GET /auth/me` — return current user profile (requires valid access token)
+
+**Out of scope for F2**: rate limiting, email verification, password reset, OAuth.
+
+**Starting point**: M0 is complete. We have async SQLAlchemy ORM, `User` model with `hashed_password`, `config.py` with `SECRET_KEY`, and pytest fixtures. No FastAPI app or routes exist yet.
 
 ---
 
-## Tasks
+## Implementation Tasks
 
-### Task 1 — Scaffold backend directory and pyproject.toml
+### Task 1 — Add auth dependencies to pyproject.toml
 
-**Goal:** Create the `backend/` package with all F1 dependencies declared.
+**Goal**: Install `bcrypt`, `pyjwt`, and `python-multipart`.
 
-**Acceptance criteria:**
-- `backend/pyproject.toml` exists with `[project]` metadata
-- Dependencies include: `fastapi`, `sqlalchemy[asyncio]>=2.0`, `asyncpg`, `alembic`, `pydantic-settings`, `python-dotenv`
-- Dev dependencies include: `pytest`, `pytest-asyncio`, `httpx`, `pytest-postgresql` (or `sqlalchemy` test utilities)
-- `backend/app/__init__.py` exists (empty, marks package)
-- Running `pip install -e backend/` succeeds
+**Acceptance criteria**:
+- `bcrypt>=4.0` present in `[project.dependencies]`
+- `pyjwt>=2.8` present in `[project.dependencies]`
+- `python-multipart>=0.0.5` present (FastAPI form support)
+- `pip install -e .` (or `uv sync`) succeeds without conflicts
 
-**Files to create:**
-```
-backend/
-├── pyproject.toml
-├── .env.example
-└── app/
-    └── __init__.py
-```
+**File changes**:
+- `backend/pyproject.toml` — add three dependencies
 
 ---
 
-### Task 2 — Settings and database configuration
+### Task 2 — Extend Settings with JWT config
 
-**Goal:** Centralise all config via `pydantic-settings` and create the async engine + session factory.
+**Goal**: Add JWT algorithm, token expiry settings, and CORS origins to `config.py`.
 
-**Acceptance criteria:**
-- `Settings` class reads `DATABASE_URL` from environment (falls back to `.env`)
-- `create_async_engine` is called once at module level with the settings URL
-- `async_session_factory` (or `AsyncSessionLocal`) is exported
-- `get_db()` async generator dependency is exported (yields a session, rolls back on error, closes on exit)
-- Module can be imported without a live database (engine is lazy)
+**Acceptance criteria**:
+- `algorithm: str = "HS256"` in `Settings`
+- `access_token_expire_minutes: int = 30` in `Settings`
+- `refresh_token_expire_days: int = 7` in `Settings`
+- `cors_origins: list[str] = ["http://localhost:5173"]` in `Settings`
+- `.env.example` updated with new vars
 
-**Files to create:**
-```
-backend/app/
-├── config.py      # pydantic-settings Settings class
-└── database.py    # engine, session factory, get_db dependency
-```
+**File changes**:
+- `backend/app/config.py` — extend `Settings` class
+- `backend/.env.example` — add `ALGORITHM`, `ACCESS_TOKEN_EXPIRE_MINUTES`, `REFRESH_TOKEN_EXPIRE_DAYS`, `CORS_ORIGINS`
 
 ---
 
-### Task 3 — Declarative base and shared mixins
+### Task 3 — Create auth schemas (Pydantic models)
 
-**Goal:** Define the `Base` all models will inherit from, plus a `TimestampMixin` for `created_at`/`updated_at`.
+**Goal**: Define all request/response shapes for auth endpoints.
 
-**Acceptance criteria:**
-- `Base` is a `DeclarativeBase` subclass (SQLAlchemy 2.x style, NOT `declarative_base()`)
-- `TimestampMixin` adds:
-  - `created_at: Mapped[datetime]` — `server_default=func.now()`, timezone-aware
-  - `updated_at: Mapped[datetime]` — `server_default=func.now()`, `onupdate=func.now()`
-- All timestamps stored in UTC (using `TIMESTAMP(timezone=True)`)
-- No foreign keys or application logic in this file
+**Acceptance criteria**:
+- `RegisterRequest`: `email` (EmailStr), `password` (min 8 chars), `display_name` (optional str)
+- `LoginRequest`: `email` (EmailStr), `password` (str)
+- `TokenResponse`: `access_token` (str), `refresh_token` (str), `token_type: str = "bearer"`
+- `RefreshRequest`: `refresh_token` (str)
+- `UserResponse`: `id` (UUID), `email` (str), `display_name` (str | None), `created_at` (datetime)
+- All models use Pydantic v2 (`model_config = ConfigDict(from_attributes=True)` where needed)
 
-**Files to create:**
-```
-backend/app/models/
-├── __init__.py    # re-exports Base, User, Note
-└── base.py        # DeclarativeBase + TimestampMixin
-```
+**File changes**:
+- `backend/app/schemas/__init__.py` — new file
+- `backend/app/schemas/auth.py` — new file with all auth schemas
 
 ---
 
-### Task 4 — User model
+### Task 4 — Create auth utilities (password + JWT)
 
-**Goal:** Define the `User` ORM model.
+**Goal**: Isolated, testable functions for password hashing and JWT operations.
 
-**Acceptance criteria:**
-- `id`: `Mapped[uuid.UUID]`, primary key, `default=uuid.uuid4`, server default via `gen_random_uuid()`
-- `email`: `Mapped[str]`, `unique=True`, `nullable=False`, indexed
-- `hashed_password`: `Mapped[str]`, `nullable=False`
-- `display_name`: `Mapped[str]`, `nullable=False`
-- Inherits `TimestampMixin` (created_at, updated_at)
-- `notes` relationship: `Mapped[list["Note"]]`, `back_populates="user"`, `cascade="all, delete-orphan"`
-- `__tablename__ = "users"`
-- `__repr__` returns `<User id=... email=...>`
+**Acceptance criteria**:
+- `hash_password(plain: str) -> str` — bcrypt hash
+- `verify_password(plain: str, hashed: str) -> bool` — constant-time comparison
+- `create_access_token(user_id: UUID) -> str` — signed HS256 JWT with `sub`, `exp`, `type: "access"`
+- `create_refresh_token(user_id: UUID) -> str` — signed HS256 JWT with `sub`, `exp`, `type: "refresh"`
+- `decode_token(token: str) -> dict` — raises `HTTPException(401)` on invalid/expired token
+- `get_current_user(token, db)` — FastAPI dependency that returns `User` from token, raises 401 if not found
 
-**Files to create:**
-```
-backend/app/models/user.py
-```
+**File changes**:
+- `backend/app/utils/__init__.py` — new file
+- `backend/app/utils/auth.py` — new file with all utilities and `get_current_user` dependency
 
 ---
 
-### Task 5 — Note model
+### Task 5 — Create auth route handlers
 
-**Goal:** Define the `Note` ORM model.
+**Goal**: Implement the four auth endpoints wired to the DB and utilities.
 
-**Acceptance criteria:**
-- `id`: `Mapped[uuid.UUID]`, primary key, `default=uuid.uuid4`
-- `title`: `Mapped[str]`, `nullable=False`
-- `content`: `Mapped[str | None]` (TEXT column, nullable)
-- `user_id`: `Mapped[uuid.UUID]`, `ForeignKey("users.id", ondelete="CASCADE")`, indexed
-- `user` relationship: `Mapped["User"]`, `back_populates="notes"`
-- Inherits `TimestampMixin`
-- `__tablename__ = "notes"`
-- Index on `(user_id, updated_at DESC)` for paginated listing queries
+**Acceptance criteria**:
+- `POST /auth/register`:
+  - Rejects duplicate email with `400 Email already registered`
+  - Hashes password before storing
+  - Returns `TokenResponse` (201)
+- `POST /auth/login`:
+  - Returns generic `401 Invalid credentials` for both bad email and bad password (no leaking)
+  - Returns `TokenResponse` (200)
+- `POST /auth/refresh`:
+  - Validates refresh token type claim (`type == "refresh"`)
+  - Returns new `TokenResponse` with fresh access + refresh tokens (200)
+  - Returns `401` for invalid/expired token
+- `GET /auth/me`:
+  - Requires `Authorization: Bearer <access_token>` header
+  - Returns `UserResponse` (200)
+  - Returns `401` if token missing or invalid
 
-**Files to create:**
-```
-backend/app/models/note.py
-```
-
----
-
-### Task 6 — Wire Alembic
-
-**Goal:** Initialise Alembic and configure `env.py` to use the async engine.
-
-**Acceptance criteria:**
-- `alembic.ini` at `backend/` root with `script_location = alembic`
-- `alembic/env.py` imports `Base.metadata` from `app.models` — so Alembic sees all tables
-- Async migration support via `run_async_migrations()` using `AsyncEngine`
-- `sqlalchemy.url` in `alembic.ini` is a placeholder; real URL comes from `Settings` at runtime
-- `alembic revision --autogenerate` produces a valid migration when run against a live DB
-
-**Files to create:**
-```
-backend/
-├── alembic.ini
-└── alembic/
-    ├── env.py
-    ├── script.py.mako
-    └── versions/
-        └── .gitkeep
-```
+**File changes**:
+- `backend/app/routes/__init__.py` — new file
+- `backend/app/routes/auth.py` — new file with `APIRouter(prefix="/auth")`
 
 ---
 
-### Task 7 — First migration: `0001_initial_schema`
+### Task 6 — Create FastAPI application entry point
 
-**Goal:** Generate and commit the initial Alembic migration that creates `users` and `notes` tables.
+**Goal**: Wire up the FastAPI app with CORS, the auth router, and a health check.
 
-**Acceptance criteria:**
-- Migration file exists at `alembic/versions/0001_initial_schema.py`
-- `upgrade()` creates `users` then `notes` (FK ordering respected)
-- `downgrade()` drops `notes` then `users`
-- Migration uses `op.create_index` for email uniqueness, user_id FK, and `(user_id, updated_at)` composite
-- Running `alembic upgrade head` on a blank database succeeds
-- Running `alembic downgrade base` cleanly removes both tables
+**Acceptance criteria**:
+- `GET /health` returns `{"status": "ok"}` (200)
+- CORS middleware uses `settings.cors_origins`
+- Auth router mounted at `/auth`
+- App can start with `uvicorn app.main:app --reload`
+- `422` validation errors return clean JSON (FastAPI default is fine)
 
-**Files to create:**
-```
-backend/alembic/versions/0001_initial_schema.py
-```
+**File changes**:
+- `backend/app/main.py` — new file (FastAPI instance, CORS, router include)
 
 ---
 
-### Task 8 — Tests
+### Task 7 — Write auth endpoint tests
 
-**Goal:** Verify models and engine wiring work correctly in isolation.
+**Goal**: Full integration test coverage for all four endpoints using the existing in-memory SQLite test fixture.
 
-**Acceptance criteria:**
-- `conftest.py` spins up an in-memory SQLite (async) or test PostgreSQL DB, creates tables, yields a session, drops tables after each test
-- `test_models.py`:
-  - `test_user_creation` — insert a User, query it back, assert fields match
-  - `test_note_creation` — insert a User + Note, assert FK relationship
-  - `test_user_notes_cascade` — delete User, assert Note is cascade-deleted
-  - `test_timestamps_auto` — created_at and updated_at are set on insert
-- All tests pass with `pytest backend/tests/`
+**Acceptance criteria**:
+- `POST /auth/register`:
+  - Happy path: returns 201 with `access_token` and `refresh_token`
+  - Duplicate email: returns 400
+  - Short password (< 8 chars): returns 422
+  - Invalid email format: returns 422
+- `POST /auth/login`:
+  - Happy path: returns 200 with token pair
+  - Wrong password: returns 401
+  - Unknown email: returns 401
+- `POST /auth/refresh`:
+  - Happy path: returns 200 with new token pair
+  - Expired/invalid token: returns 401
+  - Access token used as refresh token: returns 401
+- `GET /auth/me`:
+  - Happy path: returns user profile
+  - Missing token: returns 401
+  - Invalid token: returns 401
+- Unit tests for `hash_password` / `verify_password` / `create_access_token` / `decode_token`
 
-**Files to create:**
-```
-backend/tests/
-├── __init__.py
-├── conftest.py
-└── test_models.py
-```
+**File changes**:
+- `backend/tests/test_auth.py` — new file (integration tests via `httpx.AsyncClient`)
+- `backend/tests/test_auth_utils.py` — new file (utility unit tests)
+- `backend/tests/conftest.py` — extend with `client` fixture (AsyncClient + lifespan)
 
 ---
 
 ## Testing Strategy
 
-| Task | Test type | Tool | What to assert |
-|------|-----------|------|----------------|
-| T1 (scaffold) | Smoke | `pip install` | Package installs without errors |
-| T2 (database.py) | Unit | pytest-asyncio | `get_db()` yields a session; session rolls back on exception |
-| T3 (base.py) | Unit | pytest-asyncio | `TimestampMixin` fields are populated on insert |
-| T4 (User) | Integration | pytest-asyncio + SQLite async | Round-trip insert/select; unique email constraint; repr |
-| T5 (Note) | Integration | pytest-asyncio + SQLite async | Round-trip; cascade delete; nullable content |
-| T6 (Alembic env) | Smoke | `alembic check` | No pending autogenerate diffs against live DB |
-| T7 (Migration) | Integration | `alembic upgrade + downgrade` | Both directions succeed against real PostgreSQL |
-| T8 (test suite) | All above | `pytest backend/` | All green, no warnings |
+| Layer | Tool | What's tested |
+|---|---|---|
+| Unit | pytest + pytest-asyncio | `hash_password`, `verify_password`, `create_access_token`, `create_refresh_token`, `decode_token` (valid, expired, wrong type) |
+| Integration | pytest + httpx.AsyncClient | All four endpoints, happy paths + error paths |
+| Schema | pytest (Pydantic v2) | `RegisterRequest` min-length, email validation, optional fields |
 
-**Test database strategy:**
-Use `aiosqlite` for fast unit tests (no Docker required). Use a real PostgreSQL instance (via Docker Compose or `pytest-postgresql`) only for migration round-trip tests (T7). This keeps the test suite runnable in CI without a live Postgres instance for the model unit tests.
+**Test DB**: reuse existing `aiosqlite` in-memory fixture from `conftest.py` — no live PostgreSQL needed.
 
-**Known limitation:** SQLite does not enforce foreign key constraints by default; enable with `PRAGMA foreign_keys = ON` in the async connection event listener in `conftest.py`.
+**AsyncClient fixture pattern**:
+```python
+@pytest.fixture
+async def client(db_session):
+    async with AsyncClient(app=app, base_url="http://test") as c:
+        yield c
+```
+
+**Coverage target**: all happy paths + each documented error path. No need for 100% line coverage in F2.
 
 ---
 
 ## File Changes
 
-### New files (grouped by task)
+```
+backend/
+├── pyproject.toml                        MODIFY  — add bcrypt, pyjwt, python-multipart
+├── .env.example                          MODIFY  — add JWT config vars
+├── app/
+│   ├── config.py                         MODIFY  — extend Settings with JWT fields
+│   ├── main.py                           CREATE  — FastAPI app, CORS, router mount
+│   ├── schemas/
+│   │   ├── __init__.py                   CREATE
+│   │   └── auth.py                       CREATE  — RegisterRequest, LoginRequest, TokenResponse, UserResponse
+│   ├── utils/
+│   │   ├── __init__.py                   CREATE
+│   │   └── auth.py                       CREATE  — password + JWT helpers, get_current_user
+│   └── routes/
+│       ├── __init__.py                   CREATE
+│       └── auth.py                       CREATE  — /register, /login, /refresh, /me
+└── tests/
+    ├── conftest.py                       MODIFY  — add AsyncClient fixture
+    ├── test_auth.py                      CREATE  — endpoint integration tests
+    └── test_auth_utils.py               CREATE  — utility unit tests
+```
 
-**Task 1 — Scaffold**
-| File | Purpose |
-|------|---------|
-| `backend/pyproject.toml` | Package metadata + dependencies |
-| `backend/.env.example` | Documents required env vars |
-| `backend/app/__init__.py` | Package marker |
-
-**Task 2 — Config + DB**
-| File | Purpose |
-|------|---------|
-| `backend/app/config.py` | `Settings` class via pydantic-settings |
-| `backend/app/database.py` | Async engine, session factory, `get_db` dependency |
-
-**Task 3 — Base**
-| File | Purpose |
-|------|---------|
-| `backend/app/models/__init__.py` | Re-exports `Base`, `User`, `Note` |
-| `backend/app/models/base.py` | `Base` (DeclarativeBase) + `TimestampMixin` |
-
-**Task 4 — User model**
-| File | Purpose |
-|------|---------|
-| `backend/app/models/user.py` | `User` ORM model |
-
-**Task 5 — Note model**
-| File | Purpose |
-|------|---------|
-| `backend/app/models/note.py` | `Note` ORM model |
-
-**Task 6 — Alembic wiring**
-| File | Purpose |
-|------|---------|
-| `backend/alembic.ini` | Alembic config (script_location, db url placeholder) |
-| `backend/alembic/env.py` | Async migration runner wired to `Base.metadata` |
-| `backend/alembic/script.py.mako` | Migration file template |
-| `backend/alembic/versions/.gitkeep` | Ensures directory is tracked |
-
-**Task 7 — First migration**
-| File | Purpose |
-|------|---------|
-| `backend/alembic/versions/0001_initial_schema.py` | Creates `users` + `notes` tables |
-
-**Task 8 — Tests**
-| File | Purpose |
-|------|---------|
-| `backend/tests/__init__.py` | Package marker |
-| `backend/tests/conftest.py` | Async DB fixture (aiosqlite) |
-| `backend/tests/test_models.py` | Model CRUD + cascade + timestamp tests |
-
-### No files modified
-All files are net-new. No existing files are changed.
+**Total**: 8 new files, 3 modified files.
 
 ---
 
 ## Risk Assessment
 
-### 🟡 Medium: SQLAlchemy 2.x async engine + Alembic async wiring
-**Risk:** Alembic's `env.py` must use `run_sync` with the async engine's `sync_engine` attribute, not directly `create_async_engine`. The pattern is non-obvious and the official docs have changed between Alembic versions.
-**Mitigation:** Pin `alembic>=1.13` (stable async support). Use the `asyncio` recipe from Alembic's own docs verbatim. Test with `alembic check` immediately after wiring.
+### MEDIUM — SQLite vs PostgreSQL UUID handling
+The test DB is SQLite (aiosqlite) but production uses PostgreSQL. SQLite stores UUIDs as strings; PostgreSQL uses native UUID type. SQLAlchemy handles the mapping transparently, but token claims use `str(user.id)` — ensure `decode_token` parses back to `UUID` consistently.
 
-### 🟡 Medium: UUID primary keys with PostgreSQL
-**Risk:** `uuid.uuid4()` as Python-side default works in tests but `gen_random_uuid()` as server default requires `pgcrypto` extension in PostgreSQL < 14, or `uuid-ossp`. PostgreSQL 14+ includes it natively.
-**Mitigation:** Add `op.execute('CREATE EXTENSION IF NOT EXISTS "pgcrypto"')` in `upgrade()` as a guard. In aiosqlite tests, UUID PKs work without server defaults (Python-side default handles it).
+**Mitigation**: Store `sub` as `str(uuid)` in JWT; cast back with `UUID(claims["sub"])` in `get_current_user`.
 
-### 🟡 Medium: `aiosqlite` dialect compatibility
-**Risk:** Some SQLAlchemy column types or constraints (e.g., `TIMESTAMP(timezone=True)`) behave differently in SQLite. Tests may pass locally but fail against real PostgreSQL.
-**Mitigation:** Keep migration round-trip tests (T7) explicitly against PostgreSQL. Mark aiosqlite tests with `@pytest.mark.sqlite` so they're clearly scoped. Document the SQLite-only limitation in `conftest.py`.
+---
 
-### 🟢 Low: Import order / circular imports
-**Risk:** `models/__init__.py` re-exporting all models means `env.py` only needs one import to see the full metadata. As long as `database.py` does NOT import from `models/`, there's no circular dependency.
-**Mitigation:** `database.py` only imports from `config.py`. Models import from `models/base.py`. Alembic `env.py` imports from `app.models` (which triggers all model imports). This one-way dependency graph avoids cycles.
+### MEDIUM — Refresh token rotation vs single-use
+The plan issues a new token pair on `/refresh` but does not invalidate the old refresh token (no token blacklist). A stolen refresh token remains valid until expiry.
 
-### 🟢 Low: Missing `DATABASE_URL` at startup
-**Risk:** FastAPI/SQLAlchemy will raise at import time if `DATABASE_URL` is not set and there's no default.
-**Mitigation:** `pydantic-settings` will raise a clear `ValidationError` before the engine is created. `.env.example` documents the expected format. `get_db()` is a dependency — it's not called until a request arrives.
+**Mitigation**: Acceptable for M1. Add token family tracking or Redis blacklist in a future milestone. Document this limitation.
 
-### 🔵 [NEEDS CLARIFICATION]: Soft-delete in V2
-**Risk:** PRD mentions "soft-delete optional in V2". If soft-delete is added post-launch, it requires a migration adding a `deleted_at` column and updating all queries. No action needed now, but the schema should not make soft-delete harder to add.
-**Decision needed:** Confirm whether a `deleted_at: Mapped[datetime | None]` column should be added now (nullable, default NULL) as a forward-compatibility measure, or left entirely to V2.
+---
 
-### 🔵 [NEEDS CLARIFICATION]: Full-text search on Notes
-**Risk:** PRD says "V2: proper FTS with pg_trgm". Adding `pg_trgm` index later requires an `ALTER TABLE` migration. No blocking issue for F1 but worth noting.
-**Decision needed:** Should `0001_initial_schema` include `CREATE EXTENSION IF NOT EXISTS pg_trgm` as a no-op placeholder to avoid a separate extension migration in V2?
+### LOW — bcrypt cost factor in tests
+Default bcrypt rounds (12) make pytest runs noticeably slow with many hashing calls.
+
+**Mitigation**: In `conftest.py`, monkeypatch bcrypt rounds to 4 for the test session, or use a `TEST_BCRYPT_ROUNDS` env override.
+
+---
+
+### LOW — CORS preflight in development
+Vite dev server on `:5173` sends `OPTIONS` preflight requests. FastAPI's `CORSMiddleware` handles this automatically, but `cors_origins` must exactly match the `Origin` header.
+
+**Mitigation**: Default `cors_origins` to `["http://localhost:5173"]`; allow override via env var for CI and production.
+
+---
+
+### NO RISK — Alembic migrations
+No new database columns are needed. The `hashed_password` column already exists on `users`. F2 is pure application-layer code on top of M0's schema.
+
+---
+
+*Plan authored: 2026-03-27 | Milestone: M1 | Feature: F2*
