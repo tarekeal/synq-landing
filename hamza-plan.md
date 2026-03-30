@@ -21,8 +21,8 @@
 
 **Headline:** What's changing
 
-- Tarek goes part-time at AREMIS starting April 2026 (3 days/week, Mon/Wed/Fri)
-- Tue/Thu + mornings/evenings + weekends = full-time on PixAzul.ia
+- Tarek goes part-time at AREMIS starting April 2026 (Mon/Thu, Wed invoiced but flexible)
+- Tue/Wed/Fri + mornings/evenings + weekends = PixAzul.ia
 - Hamza continues full-time at his contract, contributes evenings + weekends (15-25h/week)
 - Synq is the engine — it's what lets us deliver at agency speed with a 2-person team
 

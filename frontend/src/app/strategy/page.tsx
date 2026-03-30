@@ -221,8 +221,8 @@ export default function StrategyPlan() {
             <div className="rounded-xl bg-background p-7 shadow-sm ring-1 ring-border">
               <h3 className="mb-3 font-semibold">Tarek</h3>
               <ul className="space-y-2 text-sm leading-[1.7] text-muted-foreground">
-                <li>Part-time at AREMIS starting April (Mon/Wed/Fri)</li>
-                <li>Tue/Thu + mornings/evenings + weekends = full-time PixAzul.ia</li>
+                <li>Part-time at AREMIS starting April (Mon/Thu, Wed invoiced but flexible)</li>
+                <li>Tue/Wed/Fri + mornings/evenings + weekends = PixAzul.ia</li>
                 <li>Synq is the engine — agency speed with a 2-person team</li>
               </ul>
             </div>
