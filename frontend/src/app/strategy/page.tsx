@@ -250,12 +250,12 @@ export default function StrategyPlan() {
                 <p className="mt-0.5 text-muted-foreground">Hamza&apos;s gift — pay-it-forward, no strings</p>
               </div>
               <div>
-                <span className="font-mono text-lg font-semibold">€3,000/mo</span>
-                <p className="mt-0.5 text-muted-foreground">Personal burn rate</p>
+                <span className="font-mono text-lg font-semibold">€10,000/mo</span>
+                <p className="mt-0.5 text-muted-foreground">Azulia company burn (includes Tarek&apos;s salary)</p>
               </div>
               <div>
-                <span className="font-mono text-lg font-semibold">5+ months</span>
-                <p className="mt-0.5 text-muted-foreground">Runway without any PixAzul.ia revenue</p>
+                <span className="font-mono text-lg font-semibold">~2.5 months</span>
+                <p className="mt-0.5 text-muted-foreground">Runway with AREMIS income + gift, no PixAzul.ia revenue</p>
               </div>
             </div>
           </div>

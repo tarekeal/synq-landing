@@ -29,8 +29,8 @@
 **Financial safety net:**
 - Tarek's AREMIS income: ~€6,000/month (3 days × €500/day)
 - Hamza's gift: €10,000 (pay-it-forward, no repayment, no strings)
-- Personal burn: ~€3,000/month
-- Runway without any PixAzul.ia revenue: 5+ months
+- Azulia company burn: ~€10,000/month (includes Tarek's salary)
+- Runway with AREMIS income + gift, no PixAzul.ia revenue: ~2.5 months
 
 ---
 
